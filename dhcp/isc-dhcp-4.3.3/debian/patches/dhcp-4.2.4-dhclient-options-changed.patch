@@ -1,0 +1,164 @@
+Description: Added broadcast flag support without config options
+
+From file called dhcp-4.2.4-dhclient-options-changed.patch I have
+backported only the parts responsible for the token:
+
+    BOOTP_BROADCAST_ALWAYS
+
+set specifically by keyword: "bootp-broadcast-always" in dhcp
+client config file. I removed all extra cmdline options added
+by the same commit. They would change cmdline behavior adding
+extra paremeters (good for IB tests, not suitable for a SRU).
+
+When backporting file called dhcp-4.2.5-lpf-ib.patch the following
+statement was not backported:
+
+    ip->client->config->bootp_broadcast_always = 1;
+
+when setting ib interface up, since the entire broadcast was
+thought not to be mandatory.
+
+Unfortunately, from:
+
+ * RFC 4390 (https://tools.ietf.org/html/rfc4390)
+ * Dynamic Host Configuration Protocol (DHCP) over InfiniBand
+
+"""
+2.2. Use of the BROADCAST flag
+
+   A DHCP client on IPoIB MUST set the BROADCAST flag in DHCPDISCOVER
+   and DHCPREQUEST messages (and set "ciaddr" to zero) to ensure that
+   the server (or the relay agent) broadcasts its reply to the client.
+
+   Note: As described in [RFC2131], "ciaddr" MUST be filled in with the
+         client's IP address during BOUND, RENEWING or REBINDING states;
+         therefore, the BROADCAST flag MUST NOT be set. In these cases,
+         the DHCP server unicasts DHCPACK message to the address in
+         "ciaddr". The link address will be resolved by ARP.
+"""
+
+The BROADCAST flag for InfiniBand DHCP REQUEST packets MUST be turned on
+(MUST is used in RFC) AND this has to be backported to fix wrong behavior.
+
+Author: Jiri Popelka <jpopelka@redhat.com>
+Origin: git://pkgs.fedoraproject.org/dhcp.git, tag: dhcp-4.2.5-30.fc20
+Bug-Ubuntu: https://launchpad.net/bugs/1529815
+Last-Update: 2016-05-05
+Signed-off-by: Rafael David Tinoco <rafael.tinoco@canonical.com>
+
+--- isc-dhcp-4.3.3.orig/client/clparse.c
++++ isc-dhcp-4.3.3/client/clparse.c
+@@ -148,6 +148,7 @@ isc_result_t read_client_conf ()
+ 	/* Requested lease time, used by DHCPv6 (DHCPv4 uses the option cache)
+ 	 */
+ 	top_level_config.requested_lease = 7200;
++	top_level_config.bootp_broadcast_always = 0;
+ 
+ 	group_allocate (&top_level_config.on_receipt, MDL);
+ 	if (!top_level_config.on_receipt)
+@@ -353,7 +354,8 @@ void read_client_leases ()
+ 	interface-declaration |
+ 	LEASE client-lease-statement |
+ 	ALIAS client-lease-statement |
+-	KEY key-definition */
++	KEY key-definition |
++	BOOTP_BROADCAST_ALWAYS */
+ 
+ void parse_client_statement (cfile, ip, config)
+ 	struct parse *cfile;
+@@ -771,6 +773,12 @@ void parse_client_statement (cfile, ip,
+ 		parse_reject_statement (cfile, config);
+ 		return;
+ 
++	      case BOOTP_BROADCAST_ALWAYS:
++		token = next_token(&val, (unsigned*)0, cfile);
++		config -> bootp_broadcast_always = 1;
++		parse_semi (cfile);
++		return;
++
+ 	      default:
+ 		lose = 0;
+ 		stmt = (struct executable_statement *)0;
+--- isc-dhcp-4.3.3.orig/client/dhclient.c
++++ isc-dhcp-4.3.3/client/dhclient.c
+@@ -949,6 +949,9 @@ static void setup_ib_interface(struct in
+ 	isc_result_t status;
+ 	struct parse *cfile = (struct parse *)0;
+ 
++	/* Set the broadcast flag */
++	ip->client->config->bootp_broadcast_always = 1;
++
+ 	/*
+ 	 * Find out if a dhcp-client-identifier option was specified either
+ 	 * in the config file or on the command line
+@@ -2678,7 +2681,8 @@ void make_discover (client, lease)
+ 	client -> packet.xid = random ();
+ 	client -> packet.secs = 0; /* filled in by send_discover. */
+ 
+-	if (can_receive_unicast_unconfigured (client -> interface))
++	if ((!(client->config->bootp_broadcast_always))
++	    && can_receive_unicast_unconfigured(client->interface))
+ 		client -> packet.flags = 0;
+ 	else
+ 		client -> packet.flags = htons (BOOTP_BROADCAST);
+@@ -2762,7 +2766,8 @@ void make_request (client, lease)
+ 	} else {
+ 		memset (&client -> packet.ciaddr, 0,
+ 			sizeof client -> packet.ciaddr);
+-		if (can_receive_unicast_unconfigured (client -> interface))
++		if ((!(client ->config->bootp_broadcast_always)) &&
++		    can_receive_unicast_unconfigured (client -> interface))
+ 			client -> packet.flags = 0;
+ 		else
+ 			client -> packet.flags = htons (BOOTP_BROADCAST);
+@@ -2824,7 +2829,8 @@ void make_decline (client, lease)
+ 	client -> packet.hops = 0;
+ 	client -> packet.xid = client -> xid;
+ 	client -> packet.secs = 0; /* Filled in by send_request. */
+-	if (can_receive_unicast_unconfigured (client -> interface))
++	if ((!(client->config-> bootp_broadcast_always))
++	    && can_receive_unicast_unconfigured (client->interface))
+ 		client -> packet.flags = 0;
+ 	else
+ 		client -> packet.flags = htons (BOOTP_BROADCAST);
+--- isc-dhcp-4.3.3.orig/common/conflex.c
++++ isc-dhcp-4.3.3/common/conflex.c
+@@ -827,6 +827,8 @@ intern(char *atom, enum dhcp_token dfv)
+ 			return BALANCE;
+ 		if (!strcasecmp (atom + 1, "ound"))
+ 			return BOUND;
++		if (!strcasecmp (atom + 1, "ootp-broadcast-always"))
++			return BOOTP_BROADCAST_ALWAYS;
+ 		break;
+ 	      case 'c':
+ 		if (!strcasecmp(atom + 1, "ase"))
+--- isc-dhcp-4.3.3.orig/includes/dhcpd.h
++++ isc-dhcp-4.3.3/includes/dhcpd.h
+@@ -1228,6 +1228,9 @@ struct client_config {
+ 	int do_forward_update;		/* If nonzero, and if we have the
+ 					   information we need, update the
+ 					   A record for the address we get. */
++
++	int bootp_broadcast_always;	/* If nonzero, always set the BOOTP_BROADCAST
++					   flag in requests */
+ };
+ 
+ /* Per-interface state used in the dhcp client... */
+--- isc-dhcp-4.3.3.orig/includes/dhctoken.h
++++ isc-dhcp-4.3.3/includes/dhctoken.h
+@@ -365,10 +365,11 @@ enum dhcp_token {
+ 	PRIMARY6 = 666,
+ 	SECONDARY6 = 667,
+ 	TOKEN_INFINIBAND = 668,
+-	POOL6 = 669,
+-	V6RELAY = 670,
+-	V6RELOPT = 671,
+-	PARSE_VENDOR_OPT = 672
++	BOOTP_BROADCAST_ALWAYS = 669,
++	POOL6 = 670,
++	V6RELAY = 671,
++	V6RELOPT = 672,
++	PARSE_VENDOR_OPT = 673
+ };
+ 
+ #define is_identifier(x)	((x) >= FIRST_TOKEN &&	\

@@ -1,0 +1,39 @@
+Description: Infiniband Support
+
+dhcp-improved-xid-correct-byte-order.patch: correct byte order so the 
+printed xid is the same as in tcpdump/wireshark
+
+Author: Jiri Popelka <jpopelka@redhat.com>
+Origin: git://pkgs.fedoraproject.org/dhcp.git, commit: 96d5a64
+Bug-Ubuntu: https://launchpad.net/bugs/1401141
+Last-Update: 2015-03-09
+
+--- isc-dhcp-4.3.1.orig/client/dhclient.c
++++ isc-dhcp-4.3.1/client/dhclient.c
+@@ -1216,7 +1216,7 @@ void dhcpack (packet)
+ 
+ 	lease = packet_to_lease (packet, client);
+ 	if (!lease) {
+-		log_info ("DHCPACK from %s (xid=0x%x)", piaddr (packet -> client_addr), client -> xid);
++		log_info ("DHCPACK from %s (xid=0x%x)", piaddr (packet -> client_addr), ntohl(client -> xid));
+ 		log_info ("packet_to_lease failed.");
+ 		return;
+ 	}
+@@ -1946,7 +1946,7 @@ void dhcpnak (packet)
+ 		return;
+ 	}
+ 
+-	log_info ("DHCPNAK from %s (xid=0x%x)", piaddr (packet -> client_addr), client -> xid);
++	log_info ("DHCPNAK from %s (xid=0x%x)", piaddr (packet -> client_addr), ntohl(client -> xid));
+ 
+ 	if (!client -> active) {
+ #if defined (DEBUG)
+@@ -2083,7 +2083,7 @@ void send_discover (cpp)
+ 	log_info ("DHCPDISCOVER on %s to %s port %d interval %ld (xid=0x%x)",
+ 	      client -> name ? client -> name : client -> interface -> name,
+ 	      inet_ntoa (sockaddr_broadcast.sin_addr),
+-	      ntohs (sockaddr_broadcast.sin_port), (long)(client -> interval), client -> xid);
++	      ntohs (sockaddr_broadcast.sin_port), (long)(client -> interval), ntohl(client -> xid));
+ 
+ 	/* Send out a packet. */
+ 	result = send_packet(client->interface, NULL, &client->packet,

@@ -1,0 +1,23 @@
+
+     ISC DHCP source configure results:
+    -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
+Package:
+  Name:          DHCP
+  Version:       4.3.3
+
+C Compiler:      gcc
+
+Flags:
+  DEFS:          -DHAVE_CONFIG_H
+  CFLAGS:        -g -O2  -Wall -Werror -fno-strict-aliasing
+
+Features:
+  debug:         no
+  failover:      
+  execute:       
+  binary-leases: 
+
+Developer:
+  ATF unittests : no
+
